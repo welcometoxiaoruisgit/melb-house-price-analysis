@@ -7,15 +7,7 @@ This project analyzes Melbourne housing prices using interactive maps and data v
 - `A2.Rmd` - Main R Markdown analysis file
 - `A2.html` - Rendered HTML report
 - `Melbourne_housing_FULL.csv` - Housing dataset
-
-## Required Data
-
-To run the analysis, you need to download the Melbourne suburb shapefile:
-
-1. Visit [Australian Bureau of Statistics](https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs-edition-3/jul2021-jun2026/access-and-downloads/digital-boundary-files)
-2. Download "Statistical Area Level 1 (SA1) ASGS Edition 3" for Victoria
-3. Extract the files to a `shapefile/` folder in this directory
-4. The main file should be named `SAL_2021_AUST_GDA94.shp`
+- `shapefile/` - Geographic boundary data for Melbourne suburbs (using Git LFS)
 
 ## Features
 
