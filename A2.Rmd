@@ -1,0 +1,232 @@
+```{r}
+# import library
+library(zoo)
+library(dplyr)
+library(tidyr)
+library(naniar)
+library(mice)
+library(lubridate)
+library(ggplot2)
+library(forcats) 
+set.seed(5003)
+```
+
+```{r}
+# Read data
+house_market = read.csv('Melbourne_housing_FULL.csv')
+glimpse(house_market)
+```
+
+```{r}
+# check unique value
+sapply(house_market, n_distinct)
+```
+
+```{r}
+# check the null value
+colSums(is.na(house_market))
+```
+
+```{r}
+# remove Unnecessary columns
+house_market = house_market %>% select(-Method, -SellerG, -Bedroom2, -Postcode, -Regionname, -Propertycount)
+```
+
+impute the `Bathroom`, `Car`, `YearBuilt`, `Landsize` with median in different suburbs, because median will be impacted less by extrem value and the house is similar in same suburb.
+
+```{r}
+# impute the bedroom, bathroom, car, YearBuilt, Landsize
+house_market$Landsize[house_market$Landsize == 0] = NA # set 0 as NA
+house_market = house_market %>%
+  group_by(Suburb) %>%
+  mutate(
+    Bathroom = ifelse(is.na(Bathroom), median(Bathroom, na.rm = TRUE), Bathroom),
+    Car       = ifelse(is.na(Car), median(Car, na.rm = TRUE), Car),
+    Landsize = ifelse(is.na(Landsize), median(Landsize, na.rm = TRUE), Landsize),
+    YearBuilt = ifelse(is.na(YearBuilt), median(YearBuilt, na.rm = TRUE), YearBuilt)
+  ) %>%
+  ungroup()
+```
+
+Using multiple imputation to impute the `BuildingArea` because this columns has large percentage Na value we need to use other column to predict
+
+```{r}
+# MICE to impute the BuildingArea
+impute_data = house_market[, c("Landsize", "BuildingArea")]
+pred = make.predictorMatrix(impute_data)
+pred[,] = 0
+pred["BuildingArea", "Landsize"] = 1
+imp = mice(impute_data, m = 5, method = "pmm", predictorMatrix = pred, maxit = 10, seed = 5003)
+completed_data = complete(imp, 1)
+house_market$BuildingArea = completed_data$BuildingArea
+```
+
+Remove the NA in `Price` because this column is target value removing can avoid leaking. Remove Na value in `Lattitude` and `Longtitude` these value is hard to impute
+
+```{r}
+house_market = house_market %>%
+  filter(
+    !is.na(Lattitude),
+    !is.na(Longtitude),
+    !is.na(Price)
+  )
+```
+
+```{r}
+# check the null value
+colSums(is.na(house_market))
+```
+
+```{r}
+# remove the Na value which can not be imputed
+house_market = house_market %>%
+  filter(
+    !is.na(YearBuilt),
+    !is.na(Landsize)
+  )
+```
+
+## Melbourne Housing Price Heatmap Analysis
+
+```{r}
+# Add geospatial analysis libraries
+library(sf)
+library(leaflet)
+library(viridis)
+library(scales)
+```
+
+```{r}
+# Load shapefile data
+shapefile_path <- "shapefile/SAL_2021_AUST_GDA94.shp"
+all_suburbs <- st_read(shapefile_path, quiet = TRUE)
+
+# Filter Victoria state suburbs
+melbourne_suburbs <- all_suburbs[all_suburbs$STE_NAME21 == "Victoria", ]
+
+print(paste("Victoria SAL contains", nrow(melbourne_suburbs), "suburbs"))
+```
+
+```{r}
+# Prepare individual house data for plotting
+house_data <- house_market %>%
+  filter(!is.na(Lattitude), !is.na(Longtitude), !is.na(Price)) %>%
+  select(Address, Suburb, Price, Lattitude, Longtitude, Rooms, Type, Bathroom, Car, Landsize, BuildingArea, YearBuilt)
+
+print(paste("Total individual houses for plotting:", nrow(house_data)))
+print(paste("Price range: $", format(min(house_data$Price), big.mark = ","), "to $", format(max(house_data$Price), big.mark = ",")))
+```
+
+```{r}
+# Create individual house price scatter plot
+p1 <- ggplot(house_data, aes(x = Longtitude, y = Lattitude, color = Price)) +
+  geom_point(alpha = 0.6, size = 0.8) +
+  scale_color_viridis_c(
+    name = "Price\n(AUD)",
+    labels = dollar_format(scale = 1e-3, suffix = "K"),
+    option = "plasma",
+    trans = "log10"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, hjust = 0.5),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  ) +
+  labs(
+    title = "Melbourne Individual House Price Distribution",
+    subtitle = paste("Data Source: Melbourne Housing Dataset |", nrow(house_data), "individual houses"),
+    x = "Longitude",
+    y = "Latitude",
+    caption = "Note: Each point represents one house, darker colors indicate higher prices"
+  )
+
+print(p1)
+```
+
+```{r}
+# Calculate average housing prices for each suburb for boundary map
+suburb_prices <- house_market %>%
+  group_by(Suburb) %>%
+  summarise(
+    avg_price = mean(Price, na.rm = TRUE),
+    median_price = median(Price, na.rm = TRUE),
+    count = n(),
+    .groups = 'drop'
+  ) %>%
+  arrange(desc(avg_price))
+
+# Merge suburb data with shapefile
+melbourne_suburbs$SAL_NAME_clean <- toupper(trimws(melbourne_suburbs$SAL_NAME21))
+suburb_prices$Suburb_clean <- toupper(trimws(suburb_prices$Suburb))
+
+merged_data <- melbourne_suburbs %>%
+  left_join(suburb_prices, by = c("SAL_NAME_clean" = "Suburb_clean"))
+
+heatmap_data <- merged_data %>%
+  filter(!is.na(avg_price))
+
+print(paste("Suburbs with price data for boundary map:", nrow(heatmap_data)))
+```
+
+
+```{r}
+# Create interactive suburb boundary map
+heatmap_data$popup_content <- paste0(
+  "<strong>", heatmap_data$SAL_NAME21, "</strong><br/>",
+  "Average Price: $", format(heatmap_data$avg_price, big.mark = ",", scientific = FALSE), "<br/>",
+  "Median Price: $", format(heatmap_data$median_price, big.mark = ",", scientific = FALSE), "<br/>",
+  "Number of Houses: ", heatmap_data$count
+)
+
+pal <- colorNumeric(
+  palette = "plasma",
+  domain = heatmap_data$avg_price,
+  na.color = "transparent"
+)
+
+interactive_map <- leaflet(heatmap_data) %>%
+  addTiles() %>%
+  addPolygons(
+    fillColor = ~pal(avg_price),
+    fillOpacity = 0.7,
+    color = "white",
+    weight = 1,
+    popup = ~popup_content,
+    highlight = highlightOptions(
+      weight = 3,
+      color = "red",
+      fillOpacity = 0.9,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    pal = pal,
+    values = ~avg_price,
+    title = "Average Price (AUD)",
+    position = "bottomright",
+    labFormat = labelFormat(prefix = "$", big.mark = ",")
+  )
+
+interactive_map
+```
+
+```{r}
+# Most expensive and cheapest individual houses
+top_expensive <- house_data %>%
+  arrange(desc(Price)) %>%
+  head(10) %>%
+  select(Address, Suburb, Price, Rooms, Type, Bathroom, Car, Landsize, BuildingArea, YearBuilt)
+
+top_cheap <- house_data %>%
+  arrange(Price) %>%
+  head(10) %>%
+  select(Address, Suburb, Price, Rooms, Type, Bathroom, Car, Landsize, BuildingArea, YearBuilt)
+
+print("Top 10 Most Expensive Houses:")
+print(top_expensive)
+
+print("Top 10 Cheapest Houses:")
+print(top_cheap)
+```
